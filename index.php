@@ -48,7 +48,10 @@ function seed(): array {
     ],'trains'=>$trains,'seats'=>$seats,'bookings'=>[],'trips'=>[]];
 }
 function ensureSampleRecords(array &$db): void {
-    if (($db['demoSeedVersion'] ?? 0) >= 1) return;
+    if (($db['demoSeedVersion'] ?? 0) >= 1) {
+        foreach($db['bookings'] as $i=>&$booking) if(str_starts_with($booking['id']??'','RDDEMO')&&!isset($booking['paymentStatus'])) { $booking['paymentStatus']=$booking['status']==='confirmed'?'paid':'refunded'; $booking['paymentMethod']=['upi','card','netbanking','upi'][$i%4]; $booking['paymentReference']='SIM-DEMO-'.str_pad((string)(($i%4)+1),5,'0',STR_PAD_LEFT); $booking['paidAt']=$booking['createdAt']??date(DATE_ATOM); } unset($booking);
+        return;
+    }
     $passenger=null;
     foreach($db['users'] as $u) if($u['email']==='passenger@raildemo.test') $passenger=$u;
     if (!$passenger) {
@@ -62,7 +65,7 @@ function ensureSampleRecords(array &$db): void {
         if(!$train) continue;
         $date=date('Y-m-d',strtotime('+'.$days.' days')); $key=tripKey($trainId,$date); $db['trips'][$key]??=['booked'=>[]];
         if($status==='confirmed'&&!in_array($seatId,$db['trips'][$key]['booked'],true)) $db['trips'][$key]['booked'][]=$seatId;
-        $db['bookings'][]=['id'=>'RDDEMO'.($i+1),'userId'=>$passenger['id'],'trainId'=>$trainId,'trainName'=>$train['name'],'trainNumber'=>$train['number'],'from'=>$train['from'],'to'=>$train['to'],'date'=>$date,'depart'=>$train['depart'],'arrive'=>$train['arrive'],'seatId'=>$seatId,'fare'=>$train['fare'],'status'=>$status,'createdAt'=>date(DATE_ATOM)];
+        $db['bookings'][]=['id'=>'RDDEMO'.($i+1),'userId'=>$passenger['id'],'trainId'=>$trainId,'trainName'=>$train['name'],'trainNumber'=>$train['number'],'from'=>$train['from'],'to'=>$train['to'],'date'=>$date,'depart'=>$train['depart'],'arrive'=>$train['arrive'],'seatId'=>$seatId,'fare'=>$train['fare'],'status'=>$status,'paymentStatus'=>$status==='confirmed'?'paid':'refunded','paymentMethod'=>['upi','card','netbanking','upi'][$i],'paymentReference'=>'SIM-DEMO-'.str_pad((string)($i+1),5,'0',STR_PAD_LEFT),'paidAt'=>date(DATE_ATOM),'createdAt'=>date(DATE_ATOM)];
     }
     $db['demoSeedVersion']=1;
 }
@@ -106,9 +109,9 @@ function api(array &$db): never {
     if ($path === '/api/auth/me' && $method === 'GET') { $u=currentUser($db); respond(200,['user'=>$u?safeUser($u):null]); }
     if ($path==='/api/admin/dashboard'&&$method==='GET') {
         $user=currentUser($db); if(!can($user,'user:read'))respond($user?403:401,['error'=>'Admin access required.']);
-        $records=[]; foreach($db['bookings'] as $b) { $b['passenger']='Unknown passenger'; $b['email']=''; foreach($db['users'] as $u)if($u['id']===$b['userId']){$b['passenger']=$u['name'];$b['email']=$u['email'];break;} $records[]=$b; }
+        $records=[]; foreach($db['bookings'] as $b) { $b['paymentStatus']??='not recorded'; $b['paymentMethod']??='—'; $b['paymentReference']??='—'; $b['passenger']='Unknown passenger'; $b['email']=''; foreach($db['users'] as $u)if($u['id']===$b['userId']){$b['passenger']=$u['name'];$b['email']=$u['email'];break;} $records[]=$b; }
         usort($records,fn($a,$b)=>strcmp($b['date'],$a['date']));
-        $confirmed=array_filter($records,fn($b)=>$b['status']==='confirmed');
+        $confirmed=array_filter($records,fn($b)=>$b['status']==='confirmed'&&$b['paymentStatus']==='paid');
         respond(200,['stats'=>['bookings'=>count($records),'confirmed'=>count($confirmed),'revenue'=>array_sum(array_column($confirmed,'fare')),'passengers'=>count(array_filter($db['users'],fn($u)=>$u['role']==='customer')),'trains'=>count($db['trains'])],'bookings'=>$records,'users'=>array_map('safeUser',$db['users']),'trains'=>$db['trains']]);
     }
     if ($path === '/api/trains' && $method === 'GET') {
@@ -123,14 +126,14 @@ function api(array &$db): never {
     }
     if ($path==='/api/bookings' && $method==='POST') {
         $user=currentUser($db); if(!can($user,'book:create'))respond($user?403:401,['error'=>$user?'Your role cannot create bookings.':'Sign in to book a seat.']); $in=input(); $train=null; foreach($db['trains'] as $t)if($t['id']===($in['trainId']??''))$train=$t; $date=(string)($in['date']??''); $seat=(string)($in['seatId']??'');
-        if(!$train||!validDate($date)||!in_array($seat,array_column($db['seats'],'id'),true))respond(400,['error'=>'Choose a valid train, travel date, and seat.']); $key=tripKey($train['id'],$date); $db['trips'][$key]??=['booked'=>[]]; if(in_array($seat,$db['trips'][$key]['booked'],true))respond(409,['error'=>'That seat was just booked. Choose another seat.']);
-        $db['trips'][$key]['booked'][]=$seat; $booking=['id'=>'RD'.strtoupper(bin2hex(random_bytes(4))),'userId'=>$user['id'],'trainId'=>$train['id'],'trainName'=>$train['name'],'trainNumber'=>$train['number'],'from'=>$train['from'],'to'=>$train['to'],'date'=>$date,'depart'=>$train['depart'],'arrive'=>$train['arrive'],'seatId'=>$seat,'fare'=>$train['fare'],'status'=>'confirmed','createdAt'=>date(DATE_ATOM)]; $db['bookings'][]=$booking; respond(201,['booking'=>$booking]);
+        if(!$train||!validDate($date)||!in_array($seat,array_column($db['seats'],'id'),true))respond(400,['error'=>'Choose a valid train, travel date, and seat.']); $method=(string)($in['paymentMethod']??''); if(!in_array($method,['upi','card','netbanking'],true))respond(400,['error'=>'Choose a simulated payment method to continue.']); $key=tripKey($train['id'],$date); $db['trips'][$key]??=['booked'=>[]]; if(in_array($seat,$db['trips'][$key]['booked'],true))respond(409,['error'=>'That seat was just booked. Choose another seat.']);
+        $db['trips'][$key]['booked'][]=$seat; $paidAt=date(DATE_ATOM); $booking=['id'=>'RD'.strtoupper(bin2hex(random_bytes(4))),'userId'=>$user['id'],'trainId'=>$train['id'],'trainName'=>$train['name'],'trainNumber'=>$train['number'],'from'=>$train['from'],'to'=>$train['to'],'date'=>$date,'depart'=>$train['depart'],'arrive'=>$train['arrive'],'seatId'=>$seat,'fare'=>$train['fare'],'status'=>'confirmed','paymentStatus'=>'paid','paymentMethod'=>$method,'paymentReference'=>'SIM-'.strtoupper(bin2hex(random_bytes(5))),'paidAt'=>$paidAt,'createdAt'=>$paidAt]; $db['bookings'][]=$booking; respond(201,['booking'=>$booking]);
     }
     if ($path==='/api/bookings' && $method==='GET') {
         $user=currentUser($db); if(!$user)respond(401,['error'=>'Sign in to view bookings.']); if(!can($user,'booking:read:self')&&!can($user,'booking:read:any'))respond(403,['error'=>'Your role cannot view bookings.']); $items=[]; foreach($db['bookings'] as $b) if(can($user,'booking:read:any')||$b['userId']===$user['id']) { foreach($db['users'] as $u)if($u['id']===$b['userId'])$b['passenger']=$u['name']; $items[]=$b; } respond(200,['bookings'=>$items]);
     }
     if (preg_match('#^/api/bookings/([^/]+)/cancel$#',$path,$m)&&$method==='POST') {
-        $user=currentUser($db); if(!$user)respond(401,['error'=>'Sign in to manage bookings.']); foreach($db['bookings'] as &$b)if($b['id']===$m[1]) { if(!can($user,'booking:cancel:self')||$b['userId']!==$user['id'])respond(403,['error'=>'You can only cancel your own booking.']); if($b['status']!=='confirmed')respond(409,['error'=>'This booking is already cancelled.']); $b['status']='cancelled'; $key=tripKey($b['trainId'],$b['date']); $db['trips'][$key]['booked']=array_values(array_diff($db['trips'][$key]['booked'],[$b['seatId']])); $out=$b; unset($b); respond(200,['booking'=>$out]); } unset($b); respond(404,['error'=>'Booking not found.']);
+        $user=currentUser($db); if(!$user)respond(401,['error'=>'Sign in to manage bookings.']); foreach($db['bookings'] as &$b)if($b['id']===$m[1]) { if(!can($user,'booking:cancel:self')||$b['userId']!==$user['id'])respond(403,['error'=>'You can only cancel your own booking.']); if($b['status']!=='confirmed')respond(409,['error'=>'This booking is already cancelled.']); $b['status']='cancelled'; if(($b['paymentStatus']??'')==='paid')$b['paymentStatus']='refunded'; $key=tripKey($b['trainId'],$b['date']); $db['trips'][$key]['booked']=array_values(array_diff($db['trips'][$key]['booked'],[$b['seatId']])); $out=$b; unset($b); respond(200,['booking'=>$out]); } unset($b); respond(404,['error'=>'Booking not found.']);
     }
     if ($path==='/api/admin/users'&&$method==='GET') { $user=currentUser($db); if(!can($user,'user:read'))respond($user?403:401,['error'=>'Admin access required.']); respond(200,['users'=>array_map('safeUser',$db['users'])]); }
     if (preg_match('#^/api/admin/users/([^/]+)/role$#',$path,$m)&&$method==='PATCH') { $user=currentUser($db); if(!can($user,'user:role:update'))respond($user?403:401,['error'=>'Admin access required.']); $in=input(); if(!in_array($in['role']??'', ['customer','staff','admin'],true))respond(400,['error'=>'Role must be customer, staff, or admin.']); foreach($db['users'] as &$target)if($target['id']===$m[1]) { if($target['id']===$user['id']&&$in['role']!=='admin')respond(400,['error'=>'You cannot remove your own admin role.']); $target['role']=$in['role']; $safe=safeUser($target); unset($target); respond(200,['user'=>$safe]); } unset($target); respond(404,['error'=>'User not found.']); }

@@ -29,6 +29,8 @@ All three demo accounts use `RailDemo!2026`. New sign ups are always assigned th
 - PHP session authentication with HTTP only, SameSite cookies and password hashing.
 - Customer, staff and admin authorization enforced by the PHP API.
 - Route search, seat selection, bookings, cancellations, and seat release after cancellation.
+- Checkout with simulated UPI, card, or net banking. Customers review their fare and seat before confirming; the booking record then includes paid status, method, and a generated demo transaction reference. No real payment is processed.
+- Booking records show payment status and reference; cancelling a paid booking marks it as a simulated refund.
 - Staff booking view and admin user and role management.
 - Admin dashboard at `/admin.html`, with booking search, status filters, summary cards, all passenger records, and train services. The dashboard data API checks the admin role on every request.
 - Sample passenger bookings seeded automatically, including confirmed and cancelled records.
